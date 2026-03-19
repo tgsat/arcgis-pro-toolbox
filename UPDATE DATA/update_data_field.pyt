@@ -1,5 +1,6 @@
 import arcpy
 
+
 def normalize_guid(val):
     if not val:
         return None
@@ -7,9 +8,10 @@ def normalize_guid(val):
 
 
 class Toolbox(object):
+
     def __init__(self):
         self.label = "Data Update Toolbox"
-        self.alias = "phototools"
+        self.alias = "updatetools"
         self.tools = [UpdatePhoto]
 
 
@@ -17,7 +19,7 @@ class UpdatePhoto(object):
 
     def __init__(self):
         self.label = "Update Data From Table"
-        self.description = "Update field dari tabel sumber"
+        self.description = "Update field layer target berdasarkan tabel sumber menggunakan ID yang sama."
         self.canRunInBackground = False
 
 
@@ -91,6 +93,12 @@ class UpdatePhoto(object):
         param6.filter.list = ["UPDATE_EXISTING","SKIP_EXISTING"]
         param6.value = "SKIP_EXISTING"
 
+        param6.description = (
+            "Menentukan cara update data:\n"
+            "SKIP_EXISTING  : Lewati record yang sudah memiliki nilai.\n"
+            "UPDATE_EXISTING: Update record walaupun sudah ada nilai."
+        )
+
         return [param0,param1,param2,param3,param4,param5,param6]
 
 
@@ -139,10 +147,21 @@ class UpdatePhoto(object):
                 if g_norm and p:
                     mapping[g_norm] = p
 
-        arcpy.AddMessage("Total key: {}".format(len(mapping)))
+        arcpy.AddMessage("Total key sumber: {}".format(len(mapping)))
+
+        total_records = int(arcpy.GetCount_management(layerB)[0])
+
+        arcpy.SetProgressor(
+            "step",
+            "Memproses update data...",
+            0,
+            total_records,
+            1
+        )
 
         count_process = 0
         count_update = 0
+        count_skip = 0
 
         with arcpy.da.UpdateCursor(layerB,[fieldB,photofield]) as cursorB:
 
@@ -153,16 +172,38 @@ class UpdatePhoto(object):
 
                 count_process += 1
 
-                if mode == "SKIP_EXISTING":
-                    if photo not in (None,""," "):
-                        continue
-
                 g_norm = normalize_guid(g)
 
-                if g_norm in mapping:
-                    row[1] = mapping[g_norm]
+                if g_norm not in mapping:
+                    arcpy.SetProgressorPosition()
+                    continue
+
+                new_value = mapping[g_norm]
+
+                if mode == "SKIP_EXISTING":
+
+                    if photo not in (None,""," "):
+                        count_skip += 1
+                        arcpy.SetProgressorPosition()
+                        continue
+
+                    row[1] = new_value
                     cursorB.updateRow(row)
                     count_update += 1
 
-        arcpy.AddMessage("Total diproses: {}".format(count_process))
-        arcpy.AddMessage("Total update: {}".format(count_update))
+                elif mode == "UPDATE_EXISTING":
+
+                    if photo != new_value:
+                        row[1] = new_value
+                        cursorB.updateRow(row)
+                        count_update += 1
+                    else:
+                        count_skip += 1
+
+                arcpy.SetProgressorPosition()
+
+        arcpy.ResetProgressor()
+        arcpy.AddMessage("Proses selesai")
+        arcpy.AddMessage("Total diproses : {}".format(count_process))
+        arcpy.AddMessage("Total update   : {}".format(count_update))
+        arcpy.AddMessage("Total skip     : {}".format(count_skip))
