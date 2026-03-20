@@ -1,3 +1,14 @@
 GENERATE ALAMAT LENGKAP OSM/__pycache__
+GENERATE ALAMAT LENGKAP OSM/reverse_gfeocode_osm.ReverseGeocode.pyt.xml
+GENERATE ALAMAT LENGKAP OSM/reverse_gfeocode_osm.pyt.xml
+
 GENERATE FIELD VALUES/__pycache__
+GENERATE FIELD VALUES/ambil_nilai_field.GenerateGI.pyt.xml
+GENERATE FIELD VALUES/ambil_nilai_field.GenerateSUTM.pyt.xml
+GENERATE FIELD VALUES/ambil_nilai_field.GenerateGardu.pyt.xml
+GENERATE FIELD VALUES/ambil_nilai_field.GeneratePenyulang.pyt.xml
+GENERATE FIELD VALUES/ambil_nilai_field.pyt.xml
+
 UPDATE DATA/__pycache__
+UPDATE DATA/update_data_field.pyt.xml
+UPDATE DATA/update_data_field.UpdatePhoto.pyt.xml
