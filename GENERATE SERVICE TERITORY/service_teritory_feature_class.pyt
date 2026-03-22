@@ -51,102 +51,128 @@ class AutoServiceTerritoryFix(object):
 
     def execute(self, parameters, messages):
 
-        layers = parameters[0].valueAsText.split(";")
-        target_fd = parameters[1].valueAsText
-        out_name = parameters[2].valueAsText
+        try:
+            arcpy.env.overwriteOutput = True
 
-        arcpy.AddMessage("🚀 START AUTO FIX SERVICE TERRITORY")
+            # =========================
+            # GET MULTIVALUE (FIX)
+            # =========================
+            vt = parameters[0].value
 
-        xmin, ymin, xmax, ymax = None, None, None, None
-        sr = None
+            layers = []
+            for i in range(vt.rowCount):
+                lyr = vt.getValue(i, 0)
+                if arcpy.Exists(lyr):
+                    layers.append(lyr)
 
-        # =========================
-        # VALIDASI + AMBIL EXTENT
-        # =========================
-        for lyr in layers:
-            desc = arcpy.Describe(lyr)
+            if not layers:
+                raise Exception("Tidak ada layer valid")
 
-            if desc.shapeType not in ["Point", "Polyline", "Polygon"]:
-                arcpy.AddWarning(f"⚠ Skip {lyr} (bukan feature layer)")
-                continue
+            target_fd = parameters[1].valueAsText
+            out_name = parameters[2].valueAsText
+            output_fc = os.path.join(target_fd, out_name)
 
-            ext = desc.extent
+            arcpy.AddMessage(f"📊 Layer valid: {len(layers)}")
+
+            xmin, ymin, xmax, ymax = None, None, None, None
+            sr = None
+
+            # =========================
+            # EXTENT
+            # =========================
+            for lyr in layers:
+                desc = arcpy.Describe(lyr)
+                ext = desc.extent
+
+                if xmin is None:
+                    xmin, ymin, xmax, ymax = ext.XMin, ext.YMin, ext.XMax, ext.YMax
+                    sr = desc.spatialReference
+                else:
+                    xmin = min(xmin, ext.XMin)
+                    ymin = min(ymin, ext.YMin)
+                    xmax = max(xmax, ext.XMax)
+                    ymax = max(ymax, ext.YMax)
 
             if xmin is None:
-                xmin, ymin, xmax, ymax = ext.XMin, ext.YMin, ext.XMax, ext.YMax
-                sr = desc.spatialReference
+                raise Exception("Extent gagal dihitung")
+
+            # =========================
+            # CREATE / UPDATE MODE
+            # =========================
+            if not arcpy.Exists(output_fc):
+
+                arcpy.AddMessage("🆕 CREATE Service Territory")
+
+                arcpy.CreateFeatureclass_management(
+                    target_fd,
+                    out_name,
+                    "POLYGON",
+                    spatial_reference=sr,
+                    has_m="ENABLED",
+                    has_z="ENABLED"
+                )
+
             else:
-                xmin = min(xmin, ext.XMin)
-                ymin = min(ymin, ext.YMin)
-                xmax = max(xmax, ext.XMax)
-                ymax = max(ymax, ext.YMax)
+                arcpy.AddMessage("♻ UPDATE Service Territory")
 
-        if xmin is None:
-            arcpy.AddError("❌ Tidak ada layer valid")
-            return
+            # =========================
+            # BUILD POLYGON
+            # =========================
+            arr = arcpy.Array()
+            arr.add(arcpy.Point(xmin, ymin))
+            arr.add(arcpy.Point(xmin, ymax))
+            arr.add(arcpy.Point(xmax, ymax))
+            arr.add(arcpy.Point(xmax, ymin))
+            arr.add(arcpy.Point(xmin, ymin))
 
-        arcpy.AddMessage("📐 Extent berhasil dihitung")
+            polygon = arcpy.Polygon(arr, sr)
 
-        # =========================
-        # CREATE POLYGON
-        # =========================
-        array = arcpy.Array([
-            arcpy.Point(xmin, ymin),
-            arcpy.Point(xmin, ymax),
-            arcpy.Point(xmax, ymax),
-            arcpy.Point(xmax, ymin),
-            arcpy.Point(xmin, ymin)
-        ])
+            # =========================
+            # CLEAR + INSERT (UPDATE MODE)
+            # =========================
+            with arcpy.da.UpdateCursor(output_fc, ["SHAPE@"]) as cur:
+                for row in cur:
+                    cur.deleteRow()
 
-        polygon = arcpy.Polygon(array, sr, True, True)  # Z & M ENABLED
+            with arcpy.da.InsertCursor(output_fc, ["SHAPE@"]) as cur:
+                cur.insertRow([polygon])
 
-        # =========================
-        # OUTPUT PATH
-        # =========================
-        output_fc = os.path.join(target_fd, out_name)
+            # =========================
+            # REPAIR
+            # =========================
+            arcpy.RepairGeometry_management(output_fc)
 
-        if arcpy.Exists(output_fc):
-            arcpy.AddMessage("♻ Menghapus existing SERVICE AREA...")
-            arcpy.Delete_management(output_fc)
+            # =========================
+            # VALIDASI
+            # =========================
+            desc = arcpy.Describe(output_fc)
 
-        # =========================
-        # CREATE FEATURE CLASS (FIX)
-        # =========================
-        arcpy.AddMessage("🧱 Membuat Feature Class (Z&M Enabled)...")
+            if not desc.hasZ or not desc.hasM:
+                raise Exception("Z/M tidak aktif")
 
-        arcpy.CreateFeatureclass_management(
-            out_path=target_fd,
-            out_name=out_name,
-            geometry_type="POLYGON",
-            spatial_reference=sr,
-            has_m="ENABLED",
-            has_z="ENABLED"
-        )
+            arcpy.AddMessage("✅ SUCCESS - SIAP UNTILITY NETWORK")
 
-        # =========================
-        # INSERT
-        # =========================
-        with arcpy.da.InsertCursor(output_fc, ["SHAPE@"]) as cursor:
-            cursor.insertRow([polygon])
+        except Exception as e:
+            arcpy.AddError(f"❌ ERROR: {str(e)}")
 
-        # =========================
-        # REPAIR GEOMETRY
-        # =========================
-        arcpy.AddMessage("🛠 Repair Geometry...")
-        arcpy.RepairGeometry_management(output_fc)
+            # =========================
+            # DEBUG OUTPUT
+            # =========================
+            arcpy.AddMessage(f"📍 Output path: {output_fc}")
 
-        # =========================
-        # VALIDASI FINAL
-        # =========================
-        desc = arcpy.Describe(output_fc)
+            # =========================
+            # REFRESH CATALOG
+            # =========================
+            arcpy.RefreshCatalog(os.path.dirname(target_fd))
 
-        if not desc.hasZ or not desc.hasM:
-            arcpy.AddError("❌ Gagal: Z/M tidak aktif")
-            return
-
-        if desc.shapeType != "Polygon":
-            arcpy.AddError("❌ Gagal: Bukan polygon")
-            return
-
-        arcpy.AddMessage("✅ VALIDASI LOLOS")
-        arcpy.AddMessage("🔥 SERVICE TERRITORY SIAP UNTUK UTILITY NETWORK")
+            # =========================
+            # ADD TO MAP
+            # =========================
+            try:
+                aprx = arcpy.mp.ArcGISProject("CURRENT")
+                m = aprx.activeMap
+                if m:
+                    m.addDataFromPath(output_fc)
+                    arcpy.AddMessage("🗺 Layer ditambahkan ke map")
+            except:
+                arcpy.AddWarning("⚠ Tidak bisa add ke map (abaikan)")

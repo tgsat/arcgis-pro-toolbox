@@ -55,21 +55,48 @@ class SafeEditor:
                 self.editor.stopEditing(True)
 
 
-# =========================
-# TRACE (NO VALIDATION BUG)
-# =========================
-def do_trace(start_layer, network):
+def validate_un(path):
 
-    arcpy.AddMessage("▶ Running Downstream Trace")
+    if not path:
+        raise Exception("Utility Network kosong")
 
-    arcpy.un.Trace(
-        in_utility_network=network,
+    if not arcpy.Exists(path):
+        raise Exception(f"Utility Network tidak ditemukan: {path}")
+
+    desc = arcpy.Describe(path)
+
+    # 🔥 Cara aman deteksi Utility Network
+    if hasattr(desc, "dataType"):
+        if "UtilityNetwork" in desc.dataType:
+            return True
+
+    # 🔥 fallback (ArcGIS kadang kirim layer)
+    if hasattr(desc, "catalogPath"):
+        if "UtilityNetwork" in desc.catalogPath:
+            return True
+
+    # 🔥 fallback terakhir (layer dari map)
+    if hasattr(desc, "name"):
+        if "UtilityNetwork" in desc.name:
+            return True
+
+    raise Exception("Input bukan Utility Network (pastikan pilih dari layer Utility Network di Catalog)")
+
+
+def do_trace(source, utility_network):
+
+    validate_un(utility_network)
+
+    arcpy.AddMessage("🔎 Menjalankan Trace...")
+
+    result = arcpy.un.Trace(
+        in_utility_network=utility_network,  # 🔥 object, bukan string
         trace_type="DOWNSTREAM",
-        starting_points=start_layer,
-        result_types=["SELECTION"]
+        starting_points=source,
+        result_types="SELECTION"
     )
 
-    return start_layer
+    return result
 
 
 # =========================
@@ -110,10 +137,10 @@ class BaseTraceTool(object):
     def get_params(self):
 
         p1 = arcpy.Parameter(
-            displayName="Network (Utility Network)",
-            name="network",
-            datatype="DEFeatureDataset",
-            parameterType="Optional",
+            displayName="Utility Network",
+            name="utility_network",
+            datatype="GPUtilityNetworkLayer",
+            parameterType="Required",
             direction="Input"
         )
 
@@ -172,7 +199,7 @@ class BaseTraceTool(object):
     def updateMessages(self, parameters):
 
         mode = parameters[5].valueAsText
-        network = parameters[0].valueAsText
+        network = parameters[0].value
 
         if mode == "DOWNSTREAM_TRACE":
             if not network:
@@ -202,7 +229,12 @@ class BaseTraceTool(object):
         network = parameters[0].valueAsText
         source = parameters[1].valueAsText
         source_field = parameters[2].valueAsText
-        targets = parameters[3].valueAsText.split(";")
+        vt = parameters[3].value
+
+        targets = []
+        for i in range(vt.rowCount):
+            targets.append(vt.getValue(i, 0))
+            
         target_field = parameters[4].valueAsText
         mode = parameters[5].valueAsText
 
