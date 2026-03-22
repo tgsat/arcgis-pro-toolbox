@@ -1,78 +1,67 @@
-# -*- coding: utf-8 -*-
 import arcpy
 import os
-import datetime
 
 # =========================
-# LOGGING
+# UTILITAS
 # =========================
-LOG_FILE = os.path.join(arcpy.env.scratchFolder or "C:\\Temp", "fieldmap_log.txt")
+def get_workspace(layer):
+    desc = arcpy.Describe(layer)
+    path = desc.catalogPath if hasattr(desc, "catalogPath") else layer
 
-def log(msg):
-    arcpy.AddMessage(msg)
+    while path and not (path.endswith(".gdb") or path.endswith(".sde")):
+        path = os.path.dirname(path)
+
+    return path
+
+
+def need_edit_session(layer):
     try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{datetime.datetime.now()} - {msg}\n")
+        desc = arcpy.Describe(layer)
+
+        if hasattr(desc, "isVersioned") and desc.isVersioned:
+            return True
+
+        if ".sde" in desc.catalogPath.lower():
+            return True
+
     except:
         pass
 
-
-# =========================
-# DETECT NETWORK
-# =========================
-def is_utility_network(network_path):
-    try:
-        desc = arcpy.Describe(network_path)
-        return desc.datasetType == "UtilityNetwork"
-    except:
-        return False
+    return False
 
 
-# =========================
-# TRACE ENGINE
-# =========================
-def do_trace(start_layer, network):
-    if is_utility_network(network):
-        log("▶ Utility Network Trace")
-        arcpy.un.Trace(
-            in_utility_network=network,
-            trace_type="DOWNSTREAM",
-            starting_points=start_layer,
-            result_types=["SELECTION"]
-        )
-        return start_layer
-    else:
-        log("▶ Geometric Network Trace")
-        out_layer = "in_memory\\trace_result"
-        arcpy.TraceGeometricNetwork_management(
-            network,
-            out_layer,
-            start_layer,
-            "TRACE_DOWNSTREAM"
-        )
-        return out_layer
+class SafeEditor:
+    def __init__(self, layer):
+        pass
+
+    def __enter__(self):
+        arcpy.AddMessage("⚡ Auto Edit (ArcGIS Pro)")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            arcpy.AddError("❌ Gagal update")
+        else:
+            arcpy.AddMessage("✅ Selesai")
 
 
-# =========================
-# UPDATE FIELD
-# =========================
-def update_field(layer, field, value):
+def update_selected(layer, field, value):
+
     count = 0
+
     with arcpy.da.UpdateCursor(layer, [field]) as cursor:
         for row in cursor:
             row[0] = value
             cursor.updateRow(row)
             count += 1
+
     return count
 
 
-# =========================
-# TOOLBOX
-# =========================
 class Toolbox(object):
     def __init__(self):
-        self.label = "Fieldmap Automation Tools"
-        self.alias = "fieldmap"
+        self.label = "Fieldmap PRO Tools"
+        self.alias = "fieldmap_pro"
         self.tools = [
             GenerateSUTM,
             GenerateGardu,
@@ -82,234 +71,188 @@ class Toolbox(object):
 
 
 # =========================
-# BASE TRACE TOOL
+# BASE SPATIAL TOOL
 # =========================
 class BaseTraceTool(object):
 
-    def get_common_params(self):
+    def isLicensed(self):
+        return True
 
-        params = []
+    def get_params(self):
 
-        params.append(arcpy.Parameter(
-            displayName="Network",
-            name="network",
-            datatype="DEFeatureDataset",
-            parameterType="Required",
-            direction="Input"
-        ))
-
-        params.append(arcpy.Parameter(
-            displayName="Source Layer",
+        p1 = arcpy.Parameter(
+            displayName="Source Layer (Start - Trafo)",
             name="source",
             datatype="GPFeatureLayer",
             parameterType="Required",
             direction="Input"
-        ))
+        )
 
-        params.append(arcpy.Parameter(
+        p2 = arcpy.Parameter(
             displayName="Source Field",
             name="source_field",
             datatype="Field",
             parameterType="Required",
             direction="Input"
-        ))
+        )
+        p2.parameterDependencies = [p1.name]
 
-        params.append(arcpy.Parameter(
-            displayName="Target Layers",
+        p3 = arcpy.Parameter(
+            displayName="Target Layers (Urut: JTR;Tiang;SR;APP)",
             name="targets",
             datatype="GPFeatureLayer",
             parameterType="Required",
-            multiValue=True,
-            direction="Input"
-        ))
+            direction="Input",
+            multiValue=True
+        )
 
-        params.append(arcpy.Parameter(
+        p4 = arcpy.Parameter(
             displayName="Target Field",
             name="target_field",
             datatype="String",
             parameterType="Required",
             direction="Input"
-        ))
+        )
 
-        return params
+        return [p1, p2, p3, p4]
 
 
-    def run_trace(self, parameters):
+    def run(self, parameters):
 
-        network = parameters[0].valueAsText
-        source = parameters[1].valueAsText
-        source_field = parameters[2].valueAsText
-        targets = parameters[3].valueAsText.split(";")
-        target_field = parameters[4].valueAsText
+        source = parameters[0].valueAsText
+        source_field = parameters[1].valueAsText
+        targets = parameters[2].valueAsText.split(";")
+        target_field = parameters[3].valueAsText
 
         total = int(arcpy.management.GetCount(source)[0])
-        arcpy.SetProgressor("step", "Processing...", 0, total, 1)
+        arcpy.SetProgressor("step", "Spatial Processing...", 0, total, 1)
 
-        log(f"TOTAL DATA: {total}")
+        with SafeEditor(source):
 
-        with arcpy.da.SearchCursor(source, ["OID@", source_field]) as cursor:
-            for i, row in enumerate(cursor, 1):
+            with arcpy.da.SearchCursor(source, ["OID@", source_field]) as cursor:
 
-                oid, value = row
+                for i, (oid, value) in enumerate(cursor, 1):
 
-                arcpy.SetProgressorPosition(i)
-                log(f"{i}/{total} → {value}")
+                    arcpy.SetProgressorPosition(i)
 
-                # Select source
-                arcpy.management.SelectLayerByAttribute(
-                    source, "NEW_SELECTION", f"OBJECTID = {oid}"
-                )
+                    # 🔥 Select trafo
+                    arcpy.management.SelectLayerByAttribute(
+                        source, "NEW_SELECTION", f"OBJECTID = {oid}"
+                    )
 
-                # Trace
-                trace_layer = do_trace(source, network)
+                    current_layer = source
 
-                # Update semua target
-                for lyr in targets:
-                    try:
-                        arcpy.management.SelectLayerByLocation(
-                            lyr,
-                            "INTERSECT",
-                            trace_layer,
-                            selection_type="NEW_SELECTION"
-                        )
+                    # 🔥 CHAIN PROCESS
+                    for lyr in targets:
+                        try:
+                            arcpy.management.SelectLayerByLocation(
+                                lyr,
+                                "INTERSECT",
+                                current_layer,
+                                selection_type="NEW_SELECTION"
+                            )
 
-                        updated = update_field(lyr, target_field, value)
+                            updated = update_selected(lyr, target_field, value)
 
-                        log(f"✔ {lyr} updated: {updated}")
+                            arcpy.AddMessage(f"✔ {lyr}: {updated}")
 
-                    except Exception as e:
-                        log(f"❌ ERROR {lyr}: {str(e)}")
+                            # lanjut ke layer berikutnya
+                            current_layer = lyr
+
+                        except Exception as e:
+                            arcpy.AddWarning(f"Skip {lyr}: {str(e)}")
 
         arcpy.ResetProgressor()
-        log("SELESAI")
 
 
 # =========================
-# TOOL 1: SUTM
+# TOOL SUTM
 # =========================
 class GenerateSUTM(object):
 
     def __init__(self):
-        self.label = "Generate SUTM (Start-End XY)"
-        self.description = "Membuat X_Start, Y_Start, X_End, Y_End dari geometry line"
+        self.label = "Generate SUTM"
+        self.description = "Auto X/Y Start-End"
 
     def getParameterInfo(self):
-
-        params = []
-
-        params.append(arcpy.Parameter(
-            displayName="Layer Line (SUTM)",
-            name="line_layer",
-            datatype="GPFeatureLayer",
-            parameterType="Required",
-            direction="Input"
-        ))
-
-        return params
-
+        return [
+            arcpy.Parameter(
+                displayName="Layer",
+                name="layer",
+                datatype="GPFeatureLayer",
+                parameterType="Required",
+                direction="Input"
+            )
+        ]
 
     def execute(self, parameters, messages):
 
         layer = parameters[0].valueAsText
-        workspace = arcpy.Describe(layer).path
-
         fields = ["X_Start", "Y_Start", "X_End", "Y_End"]
 
-        # Tambah field jika belum ada
         for f in fields:
             if f not in [fld.name for fld in arcpy.ListFields(layer)]:
                 arcpy.AddField_management(layer, f, "DOUBLE")
 
         total = int(arcpy.management.GetCount(layer)[0])
-        arcpy.SetProgressor("step", "Generate SUTM...", 0, total, 1)
+        arcpy.SetProgressor("step", "SUTM...", 0, total, 1)
 
-        # =========================
-        # START EDIT SESSION
-        # =========================
-        editor = arcpy.da.Editor(workspace)
-        editor.startEditing(False, True)
-        editor.startOperation()
+        with SafeEditor(layer):
 
-        try:
             with arcpy.da.UpdateCursor(layer, ["SHAPE@", *fields]) as cursor:
+
                 for i, row in enumerate(cursor, 1):
 
                     geom = row[0]
-
-                    if geom is None:
+                    if not geom:
                         continue
 
-                    start = geom.firstPoint
-                    end = geom.lastPoint
-
-                    row[1] = start.X
-                    row[2] = start.Y
-                    row[3] = end.X
-                    row[4] = end.Y
+                    row[1] = geom.firstPoint.X
+                    row[2] = geom.firstPoint.Y
+                    row[3] = geom.lastPoint.X
+                    row[4] = geom.lastPoint.Y
 
                     cursor.updateRow(row)
                     arcpy.SetProgressorPosition(i)
-
-            editor.stopOperation()
-            editor.stopEditing(True)
-
-            log("SUTM SELESAI")
-
-        except Exception as e:
-            editor.stopOperation()
-            editor.stopEditing(False)
-            log(f"ERROR: {str(e)}")
-            raise
 
         arcpy.ResetProgressor()
 
 
 # =========================
-# TOOL 2: GARDU
+# IMPLEMENTASI TOOL
 # =========================
 class GenerateGardu(BaseTraceTool):
-
     def __init__(self):
-        self.label = "Generate Nama Gardu"
-        self.description = "Dari GarduDistribusi → ke semua layer downstream"
+        self.label = "Generate Gardu (Spatial)"
+        self.description = "Trafo → downstream (Spatial)"
+
 
     def getParameterInfo(self):
-        return self.get_common_params()
+        return self.get_params()
 
     def execute(self, parameters, messages):
-        log("=== GENERATE GARDU ===")
-        self.run_trace(parameters)
+        self.run(parameters)
 
 
-# =========================
-# TOOL 3: PENYULANG
-# =========================
 class GeneratePenyulang(BaseTraceTool):
-
     def __init__(self):
-        self.label = "Generate Nama Penyulang"
-        self.description = "Dari MVCABLE → ke semua downstream"
+        self.label = "Generate Penyulang (Spatial)"
+        self.description = "Penyulang → downstream (Spatial)"
 
     def getParameterInfo(self):
-        return self.get_common_params()
+        return self.get_params()
 
     def execute(self, parameters, messages):
-        log("=== GENERATE PENYULANG ===")
-        self.run_trace(parameters)
+        self.run(parameters)
 
 
-# =========================
-# TOOL 4: GI
-# =========================
 class GenerateGI(BaseTraceTool):
-
     def __init__(self):
-        self.label = "Generate KODE GI"
-        self.description = "Dari TRAFOGI → ke semua downstream"
+        self.label = "Generate GI (Spatial)"
+        self.description = "GI → downstream (Spatial)"
 
     def getParameterInfo(self):
-        return self.get_common_params()
+        return self.get_params()
 
     def execute(self, parameters, messages):
-        log("=== GENERATE GI ===")
-        self.run_trace(parameters)
+        self.run(parameters)
